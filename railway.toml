@@ -3,7 +3,5 @@ builder = "nixpacks"
 
 [deploy]
 startCommand = "python n8n_mcp_server.py"
-healthcheckPath = "/mcp"
-healthcheckTimeout = 30
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
