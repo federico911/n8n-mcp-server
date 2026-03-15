@@ -328,7 +328,9 @@ async def n8n_delete_execution(params: ExecutionIdInput) -> str:
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.environ.get("PORT", "8000"))
     print(f"🚀 n8n MCP Server starting on port {port}")
     print(f"🔗 n8n instance: {N8N_URL}")
-    mcp.run(transport="streamable_http", port=port, host="0.0.0.0")
+    app = mcp.streamable_http_app()
+    uvicorn.run(app, host="0.0.0.0", port=port)
