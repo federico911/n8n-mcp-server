@@ -337,19 +337,28 @@ async def not_found(request):
     return Response(status_code=404)
 
 # ── App assembly ─────────────────────────────────────────────────────────────
+from contextlib import asynccontextmanager
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.middleware.cors import CORSMiddleware
 
 mcp_asgi = mcp.streamable_http_app()
 
-app = Starlette(routes=[
-    Route("/.well-known/oauth-protected-resource",       oauth_protected_resource),
-    Route("/.well-known/oauth-protected-resource/mcp",   oauth_protected_resource),
-    Route("/.well-known/oauth-authorization-server",     not_found),
-    Route("/register", not_found, methods=["POST"]),
-    Mount("/", app=mcp_asgi),
-])
+@asynccontextmanager
+async def lifespan(app):
+    async with mcp_asgi.router.lifespan_context(app):
+        yield
+
+app = Starlette(
+    lifespan=lifespan,
+    routes=[
+        Route("/.well-known/oauth-protected-resource",     oauth_protected_resource),
+        Route("/.well-known/oauth-protected-resource/mcp", oauth_protected_resource),
+        Route("/.well-known/oauth-authorization-server",   not_found),
+        Route("/register", not_found, methods=["POST"]),
+        Mount("/", app=mcp_asgi),
+    ]
+)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ── Entry point ───────────────────────────────────────────────────────────────
