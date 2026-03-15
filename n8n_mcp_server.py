@@ -10,6 +10,7 @@ import json
 from typing import Optional
 
 import httpx
+from starlette.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
 from mcp.server.fastmcp import FastMCP
 
@@ -326,11 +327,35 @@ async def n8n_delete_execution(params: ExecutionIdInput) -> str:
         return _error(e)
 
 
-# ── Entry point ──────────────────────────────────────────────────────────────
+# ── OAuth metadata (required by MCP 2025 spec for HTTP transport) ────────────
+async def oauth_protected_resource(request):
+    base = str(request.base_url).rstrip("/")
+    return JSONResponse({"resource": base, "bearer_methods_supported": []})
+
+async def not_found(request):
+    from starlette.responses import Response
+    return Response(status_code=404)
+
+# ── App assembly ─────────────────────────────────────────────────────────────
+from starlette.applications import Starlette
+from starlette.routing import Route, Mount
+from starlette.middleware.cors import CORSMiddleware
+
+mcp_asgi = mcp.streamable_http_app()
+
+app = Starlette(routes=[
+    Route("/.well-known/oauth-protected-resource",       oauth_protected_resource),
+    Route("/.well-known/oauth-protected-resource/mcp",   oauth_protected_resource),
+    Route("/.well-known/oauth-authorization-server",     not_found),
+    Route("/register", not_found, methods=["POST"]),
+    Mount("/", app=mcp_asgi),
+])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", "8000"))
     print(f"🚀 n8n MCP Server starting on port {port}")
     print(f"🔗 n8n instance: {N8N_URL}")
-    app = mcp.streamable_http_app()
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
