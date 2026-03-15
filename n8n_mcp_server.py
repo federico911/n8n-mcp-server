@@ -7,15 +7,29 @@ via the n8n REST API. Runs as a cloud service (Railway/Render).
 
 import os
 import json
+from contextlib import asynccontextmanager
 from typing import Optional
 
 import httpx
-from starlette.responses import JSONResponse
+import uvicorn
 from pydantic import BaseModel, Field, ConfigDict
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Mount, Route
 
 # ── Server init ──────────────────────────────────────────────────────────────
-mcp = FastMCP("n8n_mcp")
+# Disable DNS rebinding protection: this server runs on Railway (cloud),
+# not localhost — the default whitelist only allows 127.0.0.1/localhost.
+mcp = FastMCP(
+    "n8n_mcp",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False
+    ),
+)
 
 # ── Config from environment ──────────────────────────────────────────────────
 N8N_URL = os.environ.get("N8N_URL", "").rstrip("/")
@@ -327,21 +341,20 @@ async def n8n_delete_execution(params: ExecutionIdInput) -> str:
         return _error(e)
 
 
-# ── OAuth metadata (required by MCP 2025 spec for HTTP transport) ────────────
-async def oauth_protected_resource(request):
+# ── OAuth discovery endpoints (required by MCP 2025 / Cowork) ────────────────
+async def oauth_protected_resource(request: Request) -> JSONResponse:
+    """Tell Cowork this server is public — no auth token needed."""
     base = str(request.base_url).rstrip("/")
-    return JSONResponse({"resource": base, "bearer_methods_supported": []})
+    return JSONResponse({
+        "resource": base,
+        "bearer_methods_supported": []
+    })
 
-async def not_found(request):
-    from starlette.responses import Response
-    return Response(status_code=404)
+async def not_found(request: Request) -> JSONResponse:
+    return JSONResponse({"error": "not_found"}, status_code=404)
 
-# ── App assembly ─────────────────────────────────────────────────────────────
-from contextlib import asynccontextmanager
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
-from starlette.middleware.cors import CORSMiddleware
 
+# ── App assembly with proper lifespan propagation ────────────────────────────
 mcp_asgi = mcp.streamable_http_app()
 
 @asynccontextmanager
@@ -361,10 +374,10 @@ app = Starlette(
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import uvicorn
     port = int(os.environ.get("PORT", "8000"))
     print(f"🚀 n8n MCP Server starting on port {port}")
     print(f"🔗 n8n instance: {N8N_URL}")
-    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    uvicorn.run(app, host="0.0.0.0", port=port)
