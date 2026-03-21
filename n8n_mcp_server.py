@@ -103,6 +103,15 @@ class ExecutionIdInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
     execution_id: str = Field(..., description="The execution ID")
 
+class DeployFromFileInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    file_path: str = Field(..., description="Absolute path to a JSON file containing the workflow definition")
+
+class UpdateFromFileInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    workflow_id: str = Field(..., description="The n8n workflow ID to update")
+    file_path: str = Field(..., description="Absolute path to a JSON file containing the updated workflow definition")
+
 # ── Tools ────────────────────────────────────────────────────────────────────
 
 @mcp.tool(
@@ -376,6 +385,72 @@ async def n8n_trigger_test(params: WorkflowIdInput) -> str:
                 "Use n8n_list_executions to retrieve recent executions for analysis instead."
             )
         return _error(e)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool(
+    name="n8n_deploy_from_file",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+)
+async def n8n_deploy_from_file(params: DeployFromFileInput) -> str:
+    """Create a new n8n workflow by reading its JSON definition from a local file.
+
+    USE THIS instead of n8n_create_workflow when the workflow JSON is large (>10KB).
+    The agent should write the JSON to a file using the Write tool, then call this
+    tool with the file path. This bypasses all tool-call size limits.
+
+    Workflow:
+        1. Agent generates JSON and writes it to /tmp/workflow.json (Write tool)
+        2. Agent calls n8n_deploy_from_file(file_path="/tmp/workflow.json")
+        3. Server reads the file and deploys to n8n
+
+    Returns:
+        str: Success message with new workflow ID and name, or error details.
+    """
+    try:
+        with open(params.file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        workflow = json.loads(content)
+        data = await _request("POST", "workflows", json=workflow)
+        return f"✅ Workflow created from file! ID: {data.get('id')} | Name: {data.get('name')}"
+    except FileNotFoundError:
+        return f"Error: File not found at '{params.file_path}'. Write the JSON there first using the Write tool."
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in file — {str(e)}"
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool(
+    name="n8n_update_from_file",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+)
+async def n8n_update_from_file(params: UpdateFromFileInput) -> str:
+    """Update an existing n8n workflow by reading its JSON definition from a local file.
+
+    USE THIS instead of n8n_update_workflow when the workflow JSON is large (>10KB).
+    The agent should write the updated JSON to a file using the Write tool, then call
+    this tool with the workflow_id and file path.
+
+    Workflow:
+        1. Agent fetches current workflow with n8n_get_workflow
+        2. Agent modifies JSON and writes to /tmp/workflow_update.json (Write tool)
+        3. Agent calls n8n_update_from_file(workflow_id="...", file_path="/tmp/workflow_update.json")
+
+    Returns:
+        str: Success message with workflow ID and name, or error details.
+    """
+    try:
+        with open(params.file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        workflow = json.loads(content)
+        data = await _request("PUT", f"workflows/{params.workflow_id}", json=workflow)
+        return f"✅ Workflow updated from file! ID: {data.get('id')} | Name: {data.get('name')}"
+    except FileNotFoundError:
+        return f"Error: File not found at '{params.file_path}'. Write the JSON there first using the Write tool."
+    except json.JSONDecodeError as e:
+        return f"Error: Invalid JSON in file — {str(e)}"
     except Exception as e:
         return _error(e)
 
