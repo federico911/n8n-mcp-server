@@ -302,24 +302,80 @@ async def n8n_list_executions(params: ListExecutionsInput) -> str:
 async def n8n_get_execution(params: ExecutionIdInput) -> str:
     """Get full details of a specific execution, including error messages and node outputs.
 
-    Use for debugging when a workflow fails. The response includes the error node,
-    error message and all intermediate node outputs.
+    IMPORTANT: Uses includeData=true to get actual error details from n8n Cloud.
+    Without this parameter n8n Cloud returns data: {} making debugging impossible.
 
     Returns:
-        str: JSON with execution details, status, timing and error info.
+        str: JSON with execution details, extracted errors per node, and status.
     """
     try:
-        data = await _request("GET", f"executions/{params.execution_id}")
+        # includeData=true is REQUIRED on n8n Cloud to get actual error details.
+        # Without it, n8n returns data: {} and debugging is impossible.
+        data = await _request("GET", f"executions/{params.execution_id}?includeData=true")
+
+        # Extract errors clearly from the deeply nested n8n execution structure.
+        errors = []
+        result_data = data.get("data", {}).get("resultData", {})
+        run_data = result_data.get("runData", {})
+
+        for node_name, node_runs in run_data.items():
+            for run in (node_runs or []):
+                if run.get("error"):
+                    err = run["error"]
+                    errors.append({
+                        "node": node_name,
+                        "error": err.get("message", str(err)),
+                        "description": err.get("description", ""),
+                        "httpCode": err.get("httpCode", ""),
+                    })
+
+        # Top-level workflow error (e.g. uncaught exception)
+        top_error = result_data.get("error")
+        if top_error:
+            errors.append({"node": "workflow", "error": str(top_error)})
+
+        nodes_executed = list(run_data.keys()) if run_data else []
+
         summary = {
             "id": data.get("id"),
             "status": data.get("status"),
             "workflowId": data.get("workflowId"),
-            "mode": data.get("mode"),
             "startedAt": data.get("startedAt"),
             "stoppedAt": data.get("stoppedAt"),
-            "data": data.get("data", {}),
+            "nodes_executed": nodes_executed,
+            "last_node": nodes_executed[-1] if nodes_executed else None,
+            "errors": errors,
+            "error_count": len(errors),
         }
         return json.dumps(summary, indent=2, ensure_ascii=False)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool(
+    name="n8n_trigger_test",
+    annotations={"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+)
+async def n8n_trigger_test(params: WorkflowIdInput) -> str:
+    """Trigger a test execution of a workflow programmatically.
+
+    Use this to test a workflow without requiring the user to click anything in n8n.
+    Returns the execution ID so you can immediately call n8n_get_execution to check results.
+
+    Returns:
+        str: Execution ID to use with n8n_get_execution, or an error message.
+    """
+    try:
+        data = await _request("POST", f"workflows/{params.workflow_id}/run", json={})
+        exec_id = data.get("executionId") or data.get("id")
+        return f"✅ Test triggered. Execution ID: {exec_id} — call n8n_get_execution with this ID."
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code in (404, 405):
+            return (
+                "Note: programmatic trigger not supported for this workflow type on your n8n plan. "
+                "Use n8n_list_executions to retrieve recent executions for analysis instead."
+            )
+        return _error(e)
     except Exception as e:
         return _error(e)
 
